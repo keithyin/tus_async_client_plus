@@ -44,6 +44,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::num::ParseIntError;
 use std::path::Path;
 use std::str::FromStr;
+use std::time::Duration;
 
 mod headers;
 /// Contains the `HttpHandler` trait and related structs. This module is only relevant when implement `HttpHandler` manually.
@@ -51,6 +52,7 @@ pub mod http;
 mod http_handler;
 
 pub use http::HttpHandler;
+use indicatif::ProgressStyle;
 
 const DEFAULT_CHUNK_SIZE: usize = 5 * 1024 * 1024;
 
@@ -71,8 +73,7 @@ impl Client {
     }
 
     /// Some environments might not support using the HTTP methods `PATCH` and `DELETE`. Use this method to create a `Client` which uses the `X-HTTP-METHOD-OVERRIDE` header to specify these methods instead.
-    pub fn with_method_override(http_handler: HttpHandler) -> Self
-    {
+    pub fn with_method_override(http_handler: HttpHandler) -> Self {
         Client {
             use_method_override: true,
             http_handler,
@@ -124,7 +125,8 @@ impl Client {
 
     /// Upload a file to the specified upload URL.
     pub async fn upload(&self, url: &str, path: &Path) -> Result<(), Error> {
-        self.upload_with_chunk_size(&url, path, DEFAULT_CHUNK_SIZE).await
+        self.upload_with_chunk_size(&url, path, DEFAULT_CHUNK_SIZE)
+            .await
     }
 
     /// Upload a file to the specified upload URL with the given chunk size.
@@ -144,11 +146,23 @@ impl Client {
             }
         }
 
+        let pb = indicatif::ProgressBar::new(file_len as u64);
+        pb.set_style(
+        ProgressStyle::with_template(
+            "{msg}::> {wide_bar} {human_pos}/{human_len} speed:{per_sec} elapsed:{elapsed} eta:{eta}").
+            unwrap());
+        pb.set_message(format!(
+            "Uploading {}",
+            path.file_name().unwrap().to_str().unwrap()
+        ));
+        pb.enable_steady_tick(Duration::from_millis(100));
+
         let mut reader = BufReader::new(file);
         let mut buffer = vec![0; chunk_size];
         let mut progress = info.bytes_uploaded;
 
         reader.seek(SeekFrom::Start(progress as u64))?;
+        pb.set_position(progress as u64);
 
         loop {
             let bytes_read = reader.read(&mut buffer)?;
@@ -183,11 +197,14 @@ impl Client {
             }?;
 
             progress = upload_offset.parse()?;
+            pb.set_position(progress as u64);
 
             if progress >= file_len as usize {
                 break;
             }
         }
+
+        pb.finish();
 
         Ok(())
     }
@@ -452,4 +469,3 @@ fn create_upload_headers(progress: usize) -> Headers {
     headers.insert(headers::UPLOAD_OFFSET.to_owned(), progress.to_string());
     headers
 }
-
